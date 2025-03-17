@@ -5,8 +5,10 @@ import Button from '@/components/Button';
 import AddressInput from '@/components/AddressInput';
 import TransactionModal from '@/components/TransactionModal';
 import AccountModal from '@/components/AccountModal';
+import TokenSelectionModal from '@/components/TokenSelectionModal';
 import { useToast } from '@/hooks/use-toast';
 import TransactionHistory from '@/components/TransactionHistory';
+import { Transaction } from '@/types/transaction';
 
 // Sample transaction data
 const sampleTransactions = [
@@ -40,7 +42,7 @@ const sampleTransactions = [
 ];
 
 // Account transaction history
-const accountTransactions = [
+const accountTransactions: Transaction[] = [
   {
     date: 'March 6, 2024',
     type: 'BRIDGE',
@@ -48,7 +50,7 @@ const accountTransactions = [
     to: 'SOL',
     fromAmount: '3 ETH',
     toAmount: '36 SOL',
-    status: 'processing' as const,
+    status: 'processing',
     hash: 'TYe123...1Qa',
   },
   {
@@ -58,7 +60,7 @@ const accountTransactions = [
     to: 'SOL',
     fromAmount: '100 USDT',
     toAmount: '120 SOL',
-    status: 'completed' as const,
+    status: 'completed',
     hash: 'TYe123...1Qa',
   },
   {
@@ -68,7 +70,7 @@ const accountTransactions = [
     to: 'SOL',
     fromAmount: '1 ETH',
     toAmount: '12 SOL',
-    status: 'failed' as const,
+    status: 'failed',
     hash: 'TYe123...1Qa',
   },
 ];
@@ -88,6 +90,8 @@ const Bridge: React.FC = () => {
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [transactionModalType, setTransactionModalType] = useState<'error' | 'details' | 'signing'>('error');
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showTokenSelectionModal, setShowTokenSelectionModal] = useState(false);
+  const [tokenSelectionMode, setTokenSelectionMode] = useState<'send' | 'receive'>('send');
   const [errorMessage, setErrorMessage] = useState('');
   const [currentTransaction, setCurrentTransaction] = useState<any | null>(null);
   
@@ -199,9 +203,22 @@ const Bridge: React.FC = () => {
       description: "Your wallet has been connected successfully.",
     });
   };
+
+  const openTokenSelection = (mode: 'send' | 'receive') => {
+    setTokenSelectionMode(mode);
+    setShowTokenSelectionModal(true);
+  };
+  
+  const handleTokenSelect = (token: { symbol: string; name: string }) => {
+    if (tokenSelectionMode === 'send') {
+      setSendToken(token.symbol as 'ETH' | 'SOL');
+    } else {
+      setReceiveToken(token.symbol as 'ETH' | 'SOL');
+    }
+  };
   
   return (
-    <div className="min-h-screen bg-bridge-bg text-white flex flex-col">
+    <div className="min-h-screen bg-[#121217] text-white flex flex-col">
       {/* Header */}
       <header className="py-4 px-6 flex justify-between items-center border-b border-bridge-accent/20">
         <div className="flex items-center space-x-6">
@@ -243,7 +260,7 @@ const Bridge: React.FC = () => {
         {/* Left panel */}
         <div className="w-1/3 border-r border-bridge-accent/20 p-6">
           <div className="h-full flex flex-col">
-            <h1 className="text-4xl font-bold mb-4">BRIDGE</h1>
+            <h1 className="text-6xl font-bold mb-4 text-gray-400">{selectedTab.toUpperCase()}</h1>
             <p className="text-bridge-muted text-sm mb-6">
               No contracts. No custodians.<br />
               No bullshit. Send anything.<br />
@@ -276,13 +293,16 @@ const Bridge: React.FC = () => {
               <div className="mb-8">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-bridge-muted">Send</span>
-                  <div className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded">
+                  <button 
+                    onClick={() => openTokenSelection('send')}
+                    className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
+                  >
                     <div className="w-4 h-4 bg-bridge-bg rounded-sm flex items-center justify-center">
                       <span className="text-xs">Ξ</span>
                     </div>
                     <span className="text-xs">{sendToken}</span>
                     <span className="text-xs text-bridge-muted">{sendToken === 'ETH' ? 'Ethereum' : 'Solana'}</span>
-                  </div>
+                  </button>
                 </div>
                 
                 <div className="bridge-input flex items-center">
@@ -323,13 +343,16 @@ const Bridge: React.FC = () => {
               <div className="mb-8">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-bridge-muted">Receive</span>
-                  <div className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded">
+                  <button 
+                    onClick={() => openTokenSelection('receive')}
+                    className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
+                  >
                     <div className="w-4 h-4 bg-bridge-bg rounded-sm flex items-center justify-center">
                       <span className="text-xs">{receiveToken === 'SOL' ? 'S' : 'Ξ'}</span>
                     </div>
                     <span className="text-xs">{receiveToken}</span>
                     <span className="text-xs text-bridge-muted">{receiveToken === 'SOL' ? 'Solana' : 'Ethereum'}</span>
-                  </div>
+                  </button>
                 </div>
                 
                 <div className="bridge-input flex items-center mb-4">
@@ -424,6 +447,13 @@ const Bridge: React.FC = () => {
         isOpen={showAccountModal}
         onClose={() => setShowAccountModal(false)}
         transactions={accountTransactions}
+      />
+
+      <TokenSelectionModal
+        isOpen={showTokenSelectionModal}
+        onClose={() => setShowTokenSelectionModal(false)}
+        onSelect={handleTokenSelect}
+        mode={tokenSelectionMode}
       />
     </div>
   );

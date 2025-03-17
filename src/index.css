@@ -60,7 +60,7 @@
 
   body {
     @apply bg-bridge-bg text-bridge-text font-sans;
-    background-color: #121217;
+    background-color: #0c0c10;
   }
   
   input:focus {

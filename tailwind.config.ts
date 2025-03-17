@@ -1,4 +1,3 @@
-
 import type { Config } from "tailwindcss";
 
 export default {
@@ -54,7 +53,7 @@ export default {
           foreground: "hsl(var(--card-foreground))",
         },
         bridge: {
-          bg: "#121217",
+          bg: "#0c0c10",
           card: "#1a1a23",
           accent: "#292935",
           text: "#ffffff",
