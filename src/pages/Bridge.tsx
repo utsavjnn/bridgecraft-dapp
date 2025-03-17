@@ -1,5 +1,4 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Logo from '@/components/Logo';
 import Button from '@/components/Button';
 import AddressInput from '@/components/AddressInput';
@@ -9,6 +8,9 @@ import TokenSelectionModal from '@/components/TokenSelectionModal';
 import { useToast } from '@/hooks/use-toast';
 import TransactionHistory from '@/components/TransactionHistory';
 import { Transaction } from '@/types/transaction';
+import WalletModal from '@/components/WalletModal';
+import WalletDropdown from '@/components/WalletDropdown';
+import { connectMetaMask, subscribeToWalletEvents } from '@/lib/wallet';
 
 // Sample transaction data
 const sampleTransactions = [
@@ -94,6 +96,38 @@ const Bridge: React.FC = () => {
   const [tokenSelectionMode, setTokenSelectionMode] = useState<'send' | 'receive'>('send');
   const [errorMessage, setErrorMessage] = useState('');
   const [currentTransaction, setCurrentTransaction] = useState<any | null>(null);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [chainId, setChainId] = useState<number | null>(null);
+  
+  // Setup wallet event listeners
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const cleanup = subscribeToWalletEvents(
+      // Handle accounts changed
+      (accounts) => {
+        if (accounts.length === 0) {
+          handleDisconnectWallet();
+        } else {
+          setWalletAddress(accounts[0]);
+        }
+      },
+      // Handle chain changed
+      (chainId) => {
+        setChainId(parseInt(chainId, 16));
+        toast({
+          title: "Network Changed",
+          description: `Switched to chain ID: ${parseInt(chainId, 16)}`,
+        });
+      },
+      // Handle disconnect
+      handleDisconnectWallet
+    );
+
+    return cleanup;
+  }, [isConnected]);
   
   const handleMaxAmount = () => {
     setSendAmount('123.1123');
@@ -197,10 +231,42 @@ const Bridge: React.FC = () => {
   };
   
   const handleConnectWallet = () => {
-    setIsConnected(true);
+    setShowWalletModal(true);
+  };
+
+  const handleWalletSelect = async (walletId: string) => {
+    if (walletId === 'metamask') {
+      const connection = await connectMetaMask();
+      
+      if (connection) {
+        setConnectedWallet('metamask');
+        setWalletAddress(connection.address);
+        setChainId(connection.chainId);
+        setIsConnected(true);
+        
+        toast({
+          title: "Wallet Connected",
+          description: "Successfully connected to MetaMask",
+        });
+      }
+    } else {
+      // Handle other wallet types (WalletConnect, Coinbase) here
+      toast({
+        title: "Not Implemented",
+        description: `${walletId} connection not yet implemented`,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleDisconnectWallet = () => {
+    setIsConnected(false);
+    setConnectedWallet(null);
+    setWalletAddress(null);
+    setChainId(null);
     toast({
-      title: "Wallet connected",
-      description: "Your wallet has been connected successfully.",
+      title: "Wallet Disconnected",
+      description: "Your wallet has been disconnected.",
     });
   };
 
@@ -230,23 +296,22 @@ const Bridge: React.FC = () => {
             >
               BRIDGE
             </button>
-            <button 
+            {/* <button 
               className={`px-1 py-0.5 text-sm font-medium ${selectedTab === 'explorer' ? 'text-white' : 'text-bridge-muted hover:text-white/80'}`}
               onClick={() => setSelectedTab('explorer')}
             >
               EXPLORER
-            </button>
+            </button> */}
           </nav>
         </div>
         
         <div className="flex items-center space-x-3">
           {isConnected ? (
-            <button 
-              className="text-xs font-mono bg-bridge-accent/30 text-white px-3 py-1.5 rounded-full hover:bg-bridge-accent/50 transition-colors"
-              onClick={() => setShowAccountModal(true)}
-            >
-              0x1213131...123
-            </button>
+            <WalletDropdown
+              address={walletAddress || ''}
+              onDisconnect={handleDisconnectWallet}
+              onShowAccount={() => setShowAccountModal(true)}
+            />
           ) : (
             <Button size="sm" onClick={handleConnectWallet}>
               Connect
@@ -435,6 +500,12 @@ const Bridge: React.FC = () => {
       </main>
       
       {/* Modals */}
+      <WalletModal
+        isOpen={showWalletModal}
+        onClose={() => setShowWalletModal(false)}
+        onSelect={handleWalletSelect}
+      />
+      
       <TransactionModal
         isOpen={showTransactionModal}
         onClose={() => setShowTransactionModal(false)}
