@@ -4,13 +4,14 @@ import Button from '@/components/Button';
 import AddressInput from '@/components/AddressInput';
 import TransactionModal from '@/components/TransactionModal';
 import AccountModal from '@/components/AccountModal';
-import TokenSelectionModal from '@/components/TokenSelectionModal';
+import TokenSelectionModal, { Token, Chain } from '@/components/TokenSelectionModal';
 import { useToast } from '@/hooks/use-toast';
 import TransactionHistory from '@/components/TransactionHistory';
 import { Transaction } from '@/types/transaction';
 import WalletModal from '@/components/WalletModal';
 import WalletDropdown from '@/components/WalletDropdown';
-import { connectMetaMask, subscribeToWalletEvents } from '@/lib/wallet';
+import { connectMetaMask, connectPhantom, sendEthTransaction, sendSolTransaction, subscribeToWalletEvents } from '@/lib/wallet';
+import Web3 from 'web3';
 
 // Sample transaction data
 const sampleTransactions = [
@@ -79,14 +80,16 @@ const accountTransactions: Transaction[] = [
 
 const Bridge: React.FC = () => {
   const { toast } = useToast();
-  const [sendAmount, setSendAmount] = useState('123.1123');
-  const [receiveAmount, setReceiveAmount] = useState('123.1123');
+  const [sendAmount, setSendAmount] = useState('');
+  const [receiveAmount, setReceiveAmount] = useState('');
   const [receiverAddress, setReceiverAddress] = useState('');
   const [addressError, setAddressError] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [selectedTab, setSelectedTab] = useState<'bridge' | 'explorer'>('bridge');
-  const [sendToken, setSendToken] = useState<'ETH' | 'SOL'>('ETH');
-  const [receiveToken, setReceiveToken] = useState<'ETH' | 'SOL'>('SOL');
+  
+  // Updated token state to include chain information
+  const [sendTokenInfo, setSendTokenInfo] = useState<{ token: Token; chain: Chain } | null>(null);
+  const [receiveTokenInfo, setReceiveTokenInfo] = useState<{ token: Token; chain: Chain } | null>(null);
   
   // Modals
   const [showTransactionModal, setShowTransactionModal] = useState(false);
@@ -100,6 +103,17 @@ const Bridge: React.FC = () => {
   const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
+  const [walletBalance, setWalletBalance] = useState<string | null>(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [slippage, setSlippage] = useState('5');
+  const [isEditingSlippage, setIsEditingSlippage] = useState(false);
+  const [transactionDetails, setTransactionDetails] = useState<{
+    exchangeRate: string | null;
+    gasFee: string | null;
+  }>({
+    exchangeRate: null,
+    gasFee: null
+  });
   
   // Setup wallet event listeners
   useEffect(() => {
@@ -129,22 +143,94 @@ const Bridge: React.FC = () => {
     return cleanup;
   }, [isConnected]);
   
+  useEffect(() => {
+    const getWalletBalance = async () => {
+      if (!isConnected || !window.ethereum || !walletAddress || !sendTokenInfo) {
+        setWalletBalance(null);
+        return;
+      }
+
+      try {
+        if (sendTokenInfo.token.symbol === 'USDT') {
+          // USDT contract address on Ethereum mainnet
+          const usdtContractAddress = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+          
+          // Get USDT balance using contract call
+          const data = '0x70a08231' + '000000000000000000000000' + walletAddress.slice(2);
+          const balance = await window.ethereum.request({
+            method: 'eth_call',
+            params: [{
+              to: usdtContractAddress,
+              data: data
+            }, 'latest']
+          });
+          
+          // Convert from USDT decimals (6) to display format
+          const balanceInUsdt = (parseInt(balance, 16) / 1e6).toFixed(2);
+          setWalletBalance(balanceInUsdt);
+        } else {
+          // For ETH balance
+          const balance = await window.ethereum.request({
+            method: 'eth_getBalance',
+            params: [walletAddress, 'latest']
+          });
+          
+          // Convert from wei to ether
+          const balanceInEther = (parseInt(balance, 16) / 1e18).toFixed(4);
+          setWalletBalance(balanceInEther);
+        }
+      } catch (error) {
+        console.error('Error fetching wallet balance:', error);
+        setWalletBalance(null);
+      }
+    };
+
+    getWalletBalance();
+  }, [isConnected, walletAddress, sendTokenInfo]);
+  
   const handleMaxAmount = () => {
-    setSendAmount('123.1123');
-    setReceiveAmount('123.1123');
+    if (!isConnected) {
+      toast({
+        title: "Wallet not connected",
+        description: "Please connect your wallet to use MAX amount",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!sendTokenInfo) {
+      toast({
+        title: "No token selected",
+        description: "Please select a token first",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (!walletBalance) {
+      toast({
+        title: "Balance not available",
+        description: "Unable to fetch wallet balance",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setSendAmount(walletBalance);
+    setReceiveAmount(walletBalance); // Simple 1:1 for demo
     toast({
       title: "Maximum amount set",
-      description: "You've set the maximum available amount.",
+      description: `Set to maximum available balance: ${walletBalance} ${sendTokenInfo.token.symbol}`,
     });
   };
   
   const toggleSendReceive = () => {
-    const tempToken = sendToken;
-    setSendToken(receiveToken);
-    setReceiveToken(tempToken);
+    const tempTokenInfo = sendTokenInfo;
+    setSendTokenInfo(receiveTokenInfo);
+    setReceiveTokenInfo(tempTokenInfo);
     toast({
       title: "Tokens swapped",
-      description: `Now sending ${receiveToken} and receiving ${sendToken}.`,
+      description: `Now sending ${receiveTokenInfo?.token.symbol || ''} on ${receiveTokenInfo?.chain.name || ''} and receiving ${sendTokenInfo?.token.symbol || ''} on ${sendTokenInfo?.chain.name || ''}.`,
     });
   };
   
@@ -163,13 +249,9 @@ const Bridge: React.FC = () => {
     return true;
   };
   
-  const handleConfirmTransaction = () => {
+  const handleConfirmTransaction = async () => {
     if (!isConnected) {
-      setIsConnected(true);
-      toast({
-        title: "Wallet connected",
-        description: "Your wallet has been connected successfully.",
-      });
+      setShowWalletModal(true);
       return;
     }
     
@@ -179,36 +261,144 @@ const Bridge: React.FC = () => {
     }
     
     const isValid = validateAddress(receiverAddress);
-    
     if (!isValid) {
       return;
     }
-    
-    // Simulate random transaction outcomes for demo
-    const outcomes = ['success', 'error', 'signing'];
-    const randomOutcome = outcomes[Math.floor(Math.random() * outcomes.length)];
-    
-    if (randomOutcome === 'success') {
+
+    if (!sendTokenInfo || !receiveTokenInfo || !sendAmount || !walletAddress) {
       toast({
-        title: "Transaction confirmed",
-        description: `Successfully bridged ${sendAmount} ${sendToken} to ${receiveAmount} ${receiveToken}.`,
+        title: "Invalid Transaction",
+        description: "Please ensure all fields are filled correctly",
+        variant: "destructive"
       });
-    } else if (randomOutcome === 'error') {
-      setTransactionModalType('error');
-      setErrorMessage('Insufficient funds for transaction.');
-      setShowTransactionModal(true);
-    } else {
-      setTransactionModalType('signing');
-      setShowTransactionModal(true);
-      
-      // Simulate wallet signing delay
-      setTimeout(() => {
+      return;
+    }
+
+    // Validate wallet connection matches the selected chain
+    const isEthereumChain = sendTokenInfo.chain.name.toLowerCase().includes('ethereum');
+    const isSolanaChain = sendTokenInfo.chain.name.toLowerCase().includes('solana');
+
+    if (isEthereumChain && (!window.ethereum || connectedWallet !== 'metamask')) {
+      toast({
+        title: "Wrong Wallet",
+        description: "Please connect MetaMask to send from Ethereum chain",
+        variant: "destructive"
+      });
+      setShowWalletModal(true);
+      return;
+    }
+
+    if (isSolanaChain && (!window.solana?.isPhantom || connectedWallet !== 'phantom')) {
+      toast({
+        title: "Wrong Wallet",
+        description: "Please connect Phantom wallet to send from Solana chain",
+        variant: "destructive"
+      });
+      setShowWalletModal(true);
+      return;
+    }
+
+    // Set transaction to signing state
+    setTransactionModalType('signing');
+    setShowTransactionModal(true);
+
+    try {
+      let txHash: string | null = null;
+
+      // Check if sending from Ethereum chain
+      if (isEthereumChain) {
+        const web3 = new Web3(window.ethereum);
+        
+        if (sendTokenInfo.token.symbol === 'ETH') {
+          // ETH balance check
+          const balance = await web3.eth.getBalance(walletAddress);
+          const amountInWei = web3.utils.toWei(sendAmount, 'ether');
+          
+          if (BigInt(balance) < BigInt(amountInWei)) {
+            throw new Error("Insufficient ETH balance for transaction");
+          }
+        } else {
+          // ERC20 token balance check
+          const tokenContract = new web3.eth.Contract([
+            {
+              constant: true,
+              inputs: [{ name: "_owner", type: "address" }],
+              name: "balanceOf",
+              outputs: [{ name: "balance", type: "uint256" }],
+              type: "function"
+            },
+            {
+              constant: true,
+              inputs: [],
+              name: "decimals",
+              outputs: [{ name: "", type: "uint8" }],
+              type: "function"
+            }
+          ] as const, sendTokenInfo.token.address);
+
+          const decimals = parseInt(await tokenContract.methods.decimals().call());
+          const balance = await tokenContract.methods.balanceOf(walletAddress).call();
+          const amountInSmallestUnit = parseFloat(sendAmount) * Math.pow(10, decimals);
+
+          if (BigInt(balance) < BigInt(amountInSmallestUnit)) {
+            throw new Error(`Insufficient ${sendTokenInfo.token.symbol} balance for transaction`);
+          }
+        }
+
+        txHash = await sendEthTransaction({
+          fromAddress: walletAddress,
+          toAddress: receiverAddress,
+          amount: sendAmount,
+          tokenAddress: sendTokenInfo.token.address
+        });
+      }
+      // Check if sending from Solana chain
+      else if (isSolanaChain) {
+        // Validate if user has sufficient balance
+        const connection = new window.solana.Connection("https://api.mainnet-beta.solana.com");
+        const balance = await connection.getBalance(new window.solana.PublicKey(walletAddress));
+        const amountInLamports = parseFloat(sendAmount) * window.solana.LAMPORTS_PER_SOL;
+        
+        if (balance < amountInLamports) {
+          throw new Error("Insufficient balance for transaction");
+        }
+
+        txHash = await sendSolTransaction({
+          fromAddress: walletAddress,
+          toAddress: receiverAddress,
+          amount: sendAmount
+        });
+      }
+
+      if (txHash) {
         setShowTransactionModal(false);
         toast({
-          title: "Transaction signed",
-          description: "Your transaction has been signed and submitted.",
+          title: "Transaction Submitted",
+          description: "Your transaction has been signed and submitted to the network.",
         });
-      }, 3000);
+
+        // Add transaction to history
+        const newTransaction = {
+          date: new Date().toLocaleString(),
+          type: 'BRIDGE',
+          from: sendTokenInfo.token.symbol,
+          to: receiveTokenInfo.token.symbol,
+          fromAmount: `${sendAmount} ${sendTokenInfo.token.symbol}`,
+          toAmount: `${receiveAmount} ${receiveTokenInfo.token.symbol}`,
+          status: 'processing',
+          hash: txHash
+        };
+
+        // Update transaction history (you'll need to implement this)
+        // setTransactions([newTransaction, ...transactions]);
+      } else {
+        throw new Error("Could not start transaction. Please try again.");
+      }
+    } catch (error: any) {
+      console.error('Transaction error:', error);
+      setTransactionModalType('error');
+      setErrorMessage(error.message || 'Transaction failed. Please try again.');
+      setShowTransactionModal(true);
     }
   };
   
@@ -249,8 +439,21 @@ const Bridge: React.FC = () => {
           description: "Successfully connected to MetaMask",
         });
       }
+    } else if (walletId === 'phantom') {
+      const connection = await connectPhantom();
+      
+      if (connection) {
+        setConnectedWallet('phantom');
+        setWalletAddress(connection.address);
+        setChainId(connection.chainId);
+        setIsConnected(true);
+        
+        toast({
+          title: "Wallet Connected",
+          description: "Successfully connected to Phantom",
+        });
+      }
     } else {
-      // Handle other wallet types (WalletConnect, Coinbase) here
       toast({
         title: "Not Implemented",
         description: `${walletId} connection not yet implemented`,
@@ -275,12 +478,128 @@ const Bridge: React.FC = () => {
     setShowTokenSelectionModal(true);
   };
   
-  const handleTokenSelect = (token: { symbol: string; name: string }) => {
+  const handleTokenSelect = (selection: { token: Token; chain: Chain }) => {
     if (tokenSelectionMode === 'send') {
-      setSendToken(token.symbol as 'ETH' | 'SOL');
+      setSendTokenInfo(selection);
     } else {
-      setReceiveToken(token.symbol as 'ETH' | 'SOL');
+      setReceiveTokenInfo(selection);
     }
+  };
+  
+  const isFormValid = () => {
+    return (
+      isConnected &&
+      sendTokenInfo !== null &&
+      receiveTokenInfo !== null &&
+      sendAmount !== '' &&
+      parseFloat(sendAmount) > 0 &&
+      receiverAddress !== '' &&
+      !addressError
+    );
+  };
+  
+  const calculateTransactionDetails = async (
+    amount: string,
+    sendToken: { token: Token; chain: Chain } | null,
+    receiveToken: { token: Token; chain: Chain } | null
+  ) => {
+    if (!amount || !sendToken || !receiveToken) {
+      setTransactionDetails({
+        exchangeRate: null,
+        gasFee: null
+      });
+      return;
+    }
+
+    setIsCalculating(true);
+    try {
+      // Simulate API call - Replace with actual API call
+      interface TransactionDetailsResponse {
+        exchangeRate: string;
+        estimatedGas: string;
+        receivedAmount: string;
+      }
+
+      const response = await new Promise<TransactionDetailsResponse>((resolve) => {
+        setTimeout(() => {
+          resolve({
+            exchangeRate: `1${sendToken.token.symbol} = 12 ${receiveToken.token.symbol}`,
+            estimatedGas: '8.612',
+            receivedAmount: amount
+          });
+        }, 1000);
+      });
+
+      setTransactionDetails({
+        exchangeRate: response.exchangeRate,
+        gasFee: `$${response.estimatedGas}`
+      });
+      setReceiveAmount(response.receivedAmount);
+    } catch (error) {
+      console.error('Error calculating transaction details:', error);
+      toast({
+        title: "Calculation Error",
+        description: "Failed to calculate transaction details",
+        variant: "destructive"
+      });
+    } finally {
+      setIsCalculating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (sendAmount && sendTokenInfo && receiveTokenInfo) {
+      calculateTransactionDetails(sendAmount, sendTokenInfo, receiveTokenInfo);
+    } else {
+      setTransactionDetails({
+        exchangeRate: null,
+        gasFee: null
+      });
+      setReceiveAmount('');
+    }
+  }, [sendAmount, sendTokenInfo, receiveTokenInfo]);
+
+  const handleSendAmountChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSendAmount(value);
+    
+    if (value && sendTokenInfo && receiveTokenInfo) {
+      calculateTransactionDetails(value, sendTokenInfo, receiveTokenInfo);
+    } else {
+      setTransactionDetails({
+        exchangeRate: null,
+        gasFee: null
+      });
+      setReceiveAmount('');
+    }
+  };
+  
+  const handleSlippageChange = (value: string) => {
+    // Remove any non-numeric characters except decimal point
+    const cleanValue = value.replace(/[^\d.]/g, '');
+    
+    // Ensure only one decimal point
+    const parts = cleanValue.split('.');
+    if (parts.length > 2) return;
+    
+    // Limit to 1 decimal place
+    if (parts[1] && parts[1].length > 1) return;
+    
+    // Maximum value of 100
+    if (parseFloat(cleanValue) > 100) return;
+    
+    setSlippage(cleanValue);
+  };
+
+  const handleSlippageBlur = () => {
+    // Ensure value is between 0.1 and 100
+    const numValue = parseFloat(slippage);
+    if (isNaN(numValue) || numValue < 0.1) {
+      setSlippage('0.1');
+    } else if (numValue > 100) {
+      setSlippage('100');
+    }
+    setIsEditingSlippage(false);
   };
   
   return (
@@ -362,11 +681,21 @@ const Bridge: React.FC = () => {
                     onClick={() => openTokenSelection('send')}
                     className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
                   >
-                    <div className="w-4 h-4 bg-bridge-bg rounded-sm flex items-center justify-center">
-                      <span className="text-xs">Ξ</span>
-                    </div>
-                    <span className="text-xs">{sendToken}</span>
-                    <span className="text-xs text-bridge-muted">{sendToken === 'ETH' ? 'Ethereum' : 'Solana'}</span>
+                    {sendTokenInfo ? (
+                      <>
+                        <img 
+                          src={sendTokenInfo.token.icon} 
+                          alt={sendTokenInfo.token.symbol}
+                          className="w-6 h-6 mr-1 object-contain"
+                        />
+                        <div className="flex flex-col items-start">
+                          <span className="text-xs">{sendTokenInfo.token.symbol}</span>
+                          <span className="text-xs text-bridge-muted">{sendTokenInfo.chain.name}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xs">Select Token</span>
+                    )}
                   </button>
                 </div>
                 
@@ -375,16 +704,21 @@ const Bridge: React.FC = () => {
                     type="text"
                     className="bg-transparent border-none outline-none flex-1 font-mono"
                     value={sendAmount}
-                    onChange={(e) => {
-                      setSendAmount(e.target.value);
-                      setReceiveAmount(e.target.value); // Simple 1:1 for demo
-                    }}
+                    onChange={handleSendAmountChange}
+                    placeholder="0.0"
                   />
                   <div className="flex space-x-2 items-center ml-2">
-                    <span className="text-xs text-bridge-muted">$124,123</span>
+                    {isConnected && sendTokenInfo && walletBalance && (
+                      <span className="text-xs text-bridge-muted">Balance: {walletBalance} {sendTokenInfo.token.symbol}</span>
+                    )}
                     <button 
-                      className="text-xs bg-white/10 text-white px-2 py-0.5 rounded hover:bg-white/20 transition-colors"
+                      className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                        isConnected && sendTokenInfo
+                          ? 'bg-white/10 text-white hover:bg-white/20' 
+                          : 'bg-white/5 text-white/50 cursor-not-allowed'
+                      }`}
                       onClick={handleMaxAmount}
+                      disabled={!isConnected || !sendTokenInfo}
                     >
                       MAX
                     </button>
@@ -412,27 +746,37 @@ const Bridge: React.FC = () => {
                     onClick={() => openTokenSelection('receive')}
                     className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
                   >
-                    <div className="w-4 h-4 bg-bridge-bg rounded-sm flex items-center justify-center">
-                      <span className="text-xs">{receiveToken === 'SOL' ? 'S' : 'Ξ'}</span>
-                    </div>
-                    <span className="text-xs">{receiveToken}</span>
-                    <span className="text-xs text-bridge-muted">{receiveToken === 'SOL' ? 'Solana' : 'Ethereum'}</span>
+                    {receiveTokenInfo ? (
+                      <>
+                        <img 
+                          src={receiveTokenInfo.token.icon} 
+                          alt={receiveTokenInfo.token.symbol}
+                          className="w-6 h-6 mr-1 object-contain"
+                        />
+                        <div className="flex flex-col items-start">
+                          <span className="text-xs">{receiveTokenInfo.token.symbol}</span>
+                          <span className="text-xs text-bridge-muted">{receiveTokenInfo.chain.name}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xs">Select Token</span>
+                    )}
                   </button>
                 </div>
                 
                 <div className="bridge-input flex items-center mb-4">
                   <input
                     type="text"
-                    className="bg-transparent border-none outline-none flex-1 font-mono"
-                    value={receiveAmount}
-                    onChange={(e) => {
-                      setReceiveAmount(e.target.value);
-                      setSendAmount(e.target.value); // Simple 1:1 for demo
-                    }}
+                    className="bg-transparent border-none outline-none flex-1 font-mono opacity-50"
+                    value={!receiveTokenInfo ? '' : isCalculating ? '' : receiveAmount}
+                    readOnly
+                    placeholder={!receiveTokenInfo ? 'Select token first' : isCalculating ? 'Calculating...' : '0.0'}
                   />
-                  <div className="flex space-x-2 items-center ml-2">
-                    <span className="text-xs text-bridge-muted">$124,123</span>
-                  </div>
+                  {isCalculating && (
+                    <div className="ml-2">
+                      <div className="animate-spin h-5 w-5 border-[2.5px] border-white/20 border-t-white rounded-full" />
+                    </div>
+                  )}
                 </div>
                 
                 <AddressInput
@@ -450,10 +794,26 @@ const Bridge: React.FC = () => {
               <div className="mb-8">
                 <Button
                   fullWidth
-                  className="py-6 text-lg"
+                  className={`py-6 text-lg flex items-center justify-center ${
+                    !isFormValid() 
+                      ? 'opacity-50 cursor-not-allowed' 
+                      : ''
+                  }`}
                   onClick={handleConfirmTransaction}
+                  disabled={!isFormValid()}
                 >
-                  {isConnected ? 'Confirm transaction' : 'Connect Wallet'}
+                  <span>
+                    {!isConnected 
+                      ? 'Connect Wallet' 
+                      : !sendTokenInfo || !receiveTokenInfo
+                      ? 'Select Tokens'
+                      : !sendAmount || parseFloat(sendAmount) <= 0
+                      ? 'Enter Amount'
+                      : !receiverAddress || addressError
+                      ? 'Enter Valid Address'
+                      : 'Confirm Transaction'
+                    }
+                  </span>
                 </Button>
               </div>
               
@@ -468,13 +828,39 @@ const Bridge: React.FC = () => {
                       </svg>
                     </button>
                   </div>
-                  <span>1ETH = 12 SOL</span>
+                  <span className="text-bridge-muted">
+                    {isCalculating ? (
+                      <div className="animate-pulse">Calculating...</div>
+                    ) : transactionDetails.exchangeRate || '-'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-bridge-muted">Slippage</span>
                   <div className="flex items-center">
-                    <span>5%</span>
-                    <button className="ml-1 text-bridge-muted hover:text-white">
+                    {isEditingSlippage ? (
+                      <div className="flex items-center">
+                        <input
+                          type="text"
+                          className="w-12 bg-transparent border border-white/20 rounded px-1 text-right text-sm"
+                          value={slippage}
+                          onChange={(e) => handleSlippageChange(e.target.value)}
+                          onBlur={handleSlippageBlur}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSlippageBlur();
+                            }
+                          }}
+                          autoFocus
+                        />
+                        <span className="ml-1">%</span>
+                      </div>
+                    ) : (
+                      <span>{slippage}%</span>
+                    )}
+                    <button 
+                      className="ml-1 text-bridge-muted hover:text-white"
+                      onClick={() => setIsEditingSlippage(true)}
+                    >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M15.2322 5.23223L18.7677 8.76777M16.7322 3.73223C17.7085 2.75592 19.2914 2.75592 20.2677 3.73223C21.244 4.70854 21.244 6.29146 20.2677 7.26777L6.5 21.0355H3V17.4644L16.7322 3.73223Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                       </svg>
@@ -483,7 +869,11 @@ const Bridge: React.FC = () => {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-bridge-muted">Gas</span>
-                  <span>$8.612</span>
+                  <span className="text-bridge-muted">
+                    {isCalculating ? (
+                      <div className="animate-pulse">Calculating...</div>
+                    ) : transactionDetails.gasFee || '-'}
+                  </span>
                 </div>
               </div>
             </div>

@@ -1,23 +1,70 @@
-
-import React from 'react';
+import React, { useState } from 'react';
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
-interface Token {
+export interface Token {
   symbol: string;
   name: string;
+  chains: Chain[];
+  icon?: string;
+  address?: string; // Contract address for ERC20 tokens
 }
 
+export interface Chain {
+  id: string;
+  name: string;
+  icon?: string;
+}
+
+// Available tokens and their supported chains
 const tokens: Token[] = [
-  { symbol: 'ETH', name: 'Ethereum' },
-  { symbol: 'SOL', name: 'Solana' },
-  { symbol: 'USDC', name: 'USD Coin' },
-  { symbol: 'DAI', name: 'DAI' },
+  {
+    symbol: 'ETH',
+    name: 'Ethereum',
+    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+    chains: [
+      { 
+        id: 'ethereum', 
+        name: 'Ethereum', 
+        icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png'
+      },
+    ],
+  },
+  {
+    symbol: 'USDT',
+    name: 'Tether USD',
+    icon: 'https://cryptologos.cc/logos/tether-usdt-logo.png',
+    address: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    chains: [
+      { 
+        id: 'ethereum', 
+        name: 'Ethereum', 
+        icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png'
+      },
+      { 
+        id: 'solana', 
+        name: 'Solana', 
+        icon: 'https://cryptologos.cc/logos/solana-sol-logo.png'
+      },
+    ],
+  },
+  {
+    symbol: 'SOL',
+    name: 'Solana',
+    icon: 'https://cryptologos.cc/logos/solana-sol-logo.png',
+    chains: [
+      { 
+        id: 'solana', 
+        name: 'Solana', 
+        icon: 'https://cryptologos.cc/logos/solana-sol-logo.png'
+      },
+    ],
+  }
 ];
 
 interface TokenSelectionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: (token: Token) => void;
+  onSelect: (selection: { token: Token; chain: Chain }) => void;
   mode: 'send' | 'receive';
 }
 
@@ -27,60 +74,76 @@ const TokenSelectionModal: React.FC<TokenSelectionModalProps> = ({
   onSelect,
   mode
 }) => {
+  const [selectedToken, setSelectedToken] = useState<Token | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredTokens = tokens.filter(token => 
+    token.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    token.symbol.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md bg-[#18181f] border-bridge-accent/30 text-white">
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Select token & chain</h3>
-          
-          <div className="grid grid-cols-3 gap-2">
-            {tokens.map((token) => (
-              <button
-                key={token.symbol}
-                className="flex flex-col items-center p-4 rounded-md bg-[#1d1d25] hover:bg-bridge-accent/40 transition-colors"
-                onClick={() => {
-                  onSelect(token);
-                  onClose();
-                }}
-              >
-                <div className="w-8 h-8 bg-[#121217] rounded-md flex items-center justify-center mb-2">
-                  <span className="text-xs">{token.symbol.charAt(0)}</span>
-                </div>
-                <span className="text-xs">{token.name}</span>
-              </button>
-            ))}
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium">Select token & chain</h3>
           </div>
-          
+
           <div className="py-4">
             <input
               type="text"
-              placeholder="Search name or paste address"
+              placeholder="Search by token name"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full px-4 py-3 bg-[#1d1d25] rounded-md text-sm border border-bridge-accent/20 focus:outline-none focus:ring-1 focus:ring-white/30"
             />
           </div>
-          
-          <div className="flex flex-wrap gap-2">
-            {Array(5).fill(0).map((_, i) => (
-              <button key={i} className="flex items-center gap-1 px-2 py-1 rounded-full bg-[#1d1d25] text-xs">
-                <span className="w-3 h-3 rounded-full bg-[#121217] flex items-center justify-center text-[8px]">D</span>
-                <span>DAI</span>
-              </button>
-            ))}
-          </div>
-          
+
           <div className="space-y-2">
-            {Array(4).fill(0).map((_, i) => (
-              <div key={i} className="flex items-center justify-between p-2 rounded-md hover:bg-bridge-accent/20">
-                <div className="flex items-center gap-2">
-                  <div className="w-5 h-5 bg-white rounded-full flex items-center justify-center">
-                    <span className="text-xs">U</span>
+            {filteredTokens.map((token) => (
+              <div key={token.symbol}>
+                <button
+                  className={`w-full flex items-center p-4 rounded-lg ${
+                    selectedToken?.symbol === token.symbol 
+                      ? 'bg-bridge-accent/40' 
+                      : 'bg-[#1d1d25] hover:bg-bridge-accent/20'
+                  } transition-colors`}
+                  onClick={() => setSelectedToken(token)}
+                >
+                  <img 
+                    src={token.icon} 
+                    alt={token.symbol}
+                    className="w-8 h-8 mr-3 object-contain"
+                  />
+                  <div className="text-left">
+                    <div className="font-medium">{token.symbol}</div>
+                    <div className="text-sm text-bridge-muted">{token.name}</div>
                   </div>
-                  <span>USDC</span>
-                </div>
-                <div className="text-right">
-                  <div className="text-sm">24.12</div>
-                  <div className="text-xs text-bridge-muted">$24.12</div>
-                </div>
+                </button>
+
+                {selectedToken?.symbol === token.symbol && (
+                  <div className="mt-2 pl-4 space-y-2">
+                    <div className="text-sm text-bridge-muted mb-2">Select Chain</div>
+                    {token.chains.map((chain) => (
+                      <button
+                        key={chain.id}
+                        className="w-full flex items-center p-3 rounded-lg bg-[#1d1d25] hover:bg-bridge-accent/20 transition-colors"
+                        onClick={() => {
+                          onSelect({ token, chain });
+                          onClose();
+                        }}
+                      >
+                        <img 
+                          src={chain.icon} 
+                          alt={chain.name}
+                          className="w-6 h-6 mr-3 object-contain"
+                        />
+                        <span className="text-sm">{chain.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
