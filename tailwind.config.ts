@@ -1,3 +1,4 @@
+
 import type { Config } from "tailwindcss";
 
 export default {
@@ -18,6 +19,10 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ["SpaceMono", "monospace"],
+        mono: ["SpaceMono", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
