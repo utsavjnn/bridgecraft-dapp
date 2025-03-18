@@ -10,8 +10,9 @@ import TransactionHistory from '@/components/TransactionHistory';
 import { Transaction } from '@/types/transaction';
 import WalletModal from '@/components/WalletModal';
 import WalletDropdown from '@/components/WalletDropdown';
-import { connectMetaMask, connectPhantom, sendEthTransaction, sendSolTransaction, subscribeToWalletEvents } from '@/lib/wallet';
+import { connectMetaMask, connectPhantom, sendEthTransaction, sendSolTransaction, subscribeToWalletEvents, NETWORKS, switchNetwork } from '@/lib/wallet';
 import Web3 from 'web3';
+import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 
 // Sample transaction data
 const sampleTransactions = [
@@ -78,6 +79,17 @@ const accountTransactions: Transaction[] = [
   },
 ];
 
+interface WalletState {
+  metamask?: {
+    address: string;
+    chainId: number;
+  };
+  phantom?: {
+    address: string;
+    chainId: number;
+  };
+}
+
 const Bridge: React.FC = () => {
   const { toast } = useToast();
   const [sendAmount, setSendAmount] = useState('');
@@ -100,7 +112,8 @@ const Bridge: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [currentTransaction, setCurrentTransaction] = useState<any | null>(null);
   const [showWalletModal, setShowWalletModal] = useState(false);
-  const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
+  const [connectedWallets, setConnectedWallets] = useState<WalletState>({});
+  const [activeWallet, setActiveWallet] = useState<'metamask' | 'phantom' | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
   const [walletBalance, setWalletBalance] = useState<string | null>(null);
@@ -117,67 +130,146 @@ const Bridge: React.FC = () => {
   
   // Setup wallet event listeners
   useEffect(() => {
-    if (!isConnected) return;
+    if (!connectedWallets.metamask) return;
 
     const cleanup = subscribeToWalletEvents(
       // Handle accounts changed
       (accounts) => {
         if (accounts.length === 0) {
-          handleDisconnectWallet();
+          handleDisconnectWallet('metamask');
         } else {
-          setWalletAddress(accounts[0]);
+          setConnectedWallets(prev => ({
+            ...prev,
+            metamask: {
+              ...prev.metamask!,
+              address: accounts[0]
+            }
+          }));
         }
       },
       // Handle chain changed
       (chainId) => {
-        setChainId(parseInt(chainId, 16));
+        const chainIdNumber = parseInt(chainId, 16);
+        setConnectedWallets(prev => ({
+          ...prev,
+          metamask: {
+            ...prev.metamask!,
+            chainId: chainIdNumber
+          }
+        }));
         toast({
           title: "Network Changed",
-          description: `Switched to chain ID: ${parseInt(chainId, 16)}`,
+          description: `Switched to chain ID: ${chainIdNumber}`,
         });
       },
       // Handle disconnect
-      handleDisconnectWallet
+      () => handleDisconnectWallet('metamask')
     );
 
     return cleanup;
-  }, [isConnected]);
+  }, [connectedWallets.metamask]);
   
   useEffect(() => {
     const getWalletBalance = async () => {
-      if (!isConnected || !window.ethereum || !walletAddress || !sendTokenInfo) {
+      if (!sendTokenInfo) {
+        setWalletBalance(null);
+        return;
+      }
+
+      // Get the appropriate wallet based on the selected chain
+      const isEthereumChain = ['ethereum', 'bsc', 'scroll'].includes(sendTokenInfo.chain.id);
+      const isSolanaChain = sendTokenInfo.chain.id === 'solana';
+
+      if (isEthereumChain && (!connectedWallets.metamask || activeWallet !== 'metamask')) {
+        setWalletBalance(null);
+        return;
+      }
+
+      if (isSolanaChain && (!connectedWallets.phantom || activeWallet !== 'phantom')) {
+        setWalletBalance(null);
+        return;
+      }
+
+      const walletAddress = isEthereumChain 
+        ? connectedWallets.metamask?.address 
+        : connectedWallets.phantom?.address;
+
+      if (!walletAddress) {
         setWalletBalance(null);
         return;
       }
 
       try {
-        if (sendTokenInfo.token.symbol === 'USDT') {
-          // USDT contract address on Ethereum mainnet
-          const usdtContractAddress = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+        if (isEthereumChain) {
+          const web3 = new Web3(window.ethereum);
           
-          // Get USDT balance using contract call
-          const data = '0x70a08231' + '000000000000000000000000' + walletAddress.slice(2);
-          const balance = await window.ethereum.request({
-            method: 'eth_call',
-            params: [{
-              to: usdtContractAddress,
-              data: data
-            }, 'latest']
-          });
-          
-          // Convert from USDT decimals (6) to display format
-          const balanceInUsdt = (parseInt(balance, 16) / 1e6).toFixed(2);
-          setWalletBalance(balanceInUsdt);
-        } else {
-          // For ETH balance
-          const balance = await window.ethereum.request({
-            method: 'eth_getBalance',
-            params: [walletAddress, 'latest']
-          });
-          
-          // Convert from wei to ether
-          const balanceInEther = (parseInt(balance, 16) / 1e18).toFixed(4);
-          setWalletBalance(balanceInEther);
+          if (sendTokenInfo.token.symbol === 'ETH') {
+            const balance = await web3.eth.getBalance(walletAddress);
+            const balanceInEther = web3.utils.fromWei(balance, 'ether');
+            setWalletBalance(parseFloat(balanceInEther).toFixed(4));
+          } else if (sendTokenInfo.token.address) {
+            // For ERC20 tokens
+            const tokenContract = new web3.eth.Contract([
+              {
+                constant: true,
+                inputs: [{ name: "_owner", type: "address" }],
+                name: "balanceOf",
+                outputs: [{ name: "balance", type: "uint256" }],
+                type: "function"
+              },
+              {
+                constant: true,
+                inputs: [],
+                name: "decimals",
+                outputs: [{ name: "", type: "uint8" }],
+                type: "function"
+              }
+            ] as const, sendTokenInfo.token.address);
+
+            const [balance, decimals] = await Promise.all([
+              tokenContract.methods.balanceOf(walletAddress).call(),
+              tokenContract.methods.decimals().call()
+            ].map(p => p.then(v => v.toString())));
+
+            const balanceInToken = parseFloat(balance) / Math.pow(10, parseInt(decimals));
+            setWalletBalance(balanceInToken.toFixed(4));
+          }
+        } else if (isSolanaChain && window.solana?.isPhantom) {
+          try {
+            const connection = new Connection("https://api.mainnet-beta.solana.com", 'confirmed');
+            const publicKey = new PublicKey(walletAddress);
+            
+            if (sendTokenInfo.token.symbol === 'SOL') {
+              const balance = await connection.getBalance(publicKey);
+              const balanceInSol = balance / LAMPORTS_PER_SOL;
+              setWalletBalance(balanceInSol.toFixed(4));
+            } else if (sendTokenInfo.token.address) {
+              try {
+                const tokenMint = new PublicKey(sendTokenInfo.token.address);
+                const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+                  mint: tokenMint
+                });
+                
+                if (tokenAccounts.value.length > 0) {
+                  const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount;
+                  setWalletBalance(tokenBalance.uiAmountString);
+                } else {
+                  setWalletBalance('0');
+                }
+              } catch (error) {
+                console.error('Error fetching SPL token balance:', error);
+                setWalletBalance(null);
+                toast({
+                  title: "Error fetching token balance",
+                  description: "Failed to fetch SPL token balance",
+                  variant: "destructive"
+                });
+              }
+            }
+          } catch (error) {
+            console.error('Error fetching Solana balance:', error);
+            setWalletBalance(null);
+          }
         }
       } catch (error) {
         console.error('Error fetching wallet balance:', error);
@@ -186,18 +278,9 @@ const Bridge: React.FC = () => {
     };
 
     getWalletBalance();
-  }, [isConnected, walletAddress, sendTokenInfo]);
+  }, [sendTokenInfo, connectedWallets, activeWallet]);
   
-  const handleMaxAmount = () => {
-    if (!isConnected) {
-      toast({
-        title: "Wallet not connected",
-        description: "Please connect your wallet to use MAX amount",
-        variant: "destructive"
-      });
-      return;
-    }
-
+  const handleMaxAmount = async () => {
     if (!sendTokenInfo) {
       toast({
         title: "No token selected",
@@ -207,21 +290,131 @@ const Bridge: React.FC = () => {
       return;
     }
 
-    if (!walletBalance) {
+    // Get the appropriate wallet based on the selected chain
+    const isEthereumChain = ['ethereum', 'bsc', 'scroll'].includes(sendTokenInfo.chain.id);
+    const isSolanaChain = sendTokenInfo.chain.id === 'solana';
+
+    if (isEthereumChain && (!connectedWallets.metamask || activeWallet !== 'metamask')) {
       toast({
-        title: "Balance not available",
-        description: "Unable to fetch wallet balance",
+        title: "Connect MetaMask",
+        description: "Please connect MetaMask to use MAX amount for Ethereum chains",
         variant: "destructive"
       });
       return;
     }
 
-    setSendAmount(walletBalance);
-    setReceiveAmount(walletBalance); // Simple 1:1 for demo
-    toast({
-      title: "Maximum amount set",
-      description: `Set to maximum available balance: ${walletBalance} ${sendTokenInfo.token.symbol}`,
-    });
+    if (isSolanaChain && (!connectedWallets.phantom || activeWallet !== 'phantom')) {
+      toast({
+        title: "Connect Phantom",
+        description: "Please connect Phantom wallet to use MAX amount for Solana",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const walletAddress = isEthereumChain 
+      ? connectedWallets.metamask?.address 
+      : connectedWallets.phantom?.address;
+
+    if (!walletAddress) {
+      toast({
+        title: "Wallet not connected",
+        description: "Please connect your wallet to use MAX amount",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      let maxAmount = '0';
+
+      if (isEthereumChain) {
+        const web3 = new Web3(window.ethereum);
+        
+        if (sendTokenInfo.token.symbol === 'ETH') {
+          const balance = await web3.eth.getBalance(walletAddress);
+          // Leave some ETH for gas
+          const gasBuffer = web3.utils.toWei('0.01', 'ether');
+          const maxBalance = BigInt(balance) - BigInt(gasBuffer);
+          maxAmount = web3.utils.fromWei(maxBalance.toString(), 'ether');
+        } else if (sendTokenInfo.token.address) {
+          const tokenContract = new web3.eth.Contract([
+            {
+              constant: true,
+              inputs: [{ name: "_owner", type: "address" }],
+              name: "balanceOf",
+              outputs: [{ name: "balance", type: "uint256" }],
+              type: "function"
+            },
+            {
+              constant: true,
+              inputs: [],
+              name: "decimals",
+              outputs: [{ name: "", type: "uint8" }],
+              type: "function"
+            }
+          ] as const, sendTokenInfo.token.address);
+
+          const [balance, decimals] = await Promise.all([
+            tokenContract.methods.balanceOf(walletAddress).call(),
+            tokenContract.methods.decimals().call()
+          ].map(p => p.then(v => v.toString())));
+
+          maxAmount = (parseFloat(balance) / Math.pow(10, parseInt(decimals))).toString();
+        }
+      } else if (isSolanaChain && window.solana?.isPhantom) {
+        const connection = new Connection("https://api.mainnet-beta.solana.com", 'confirmed');
+        const publicKey = new PublicKey(walletAddress);
+        
+        if (sendTokenInfo.token.symbol === 'SOL') {
+          const balance = await connection.getBalance(publicKey);
+          // Leave some SOL for gas (0.01 SOL)
+          const gasBuffer = 0.01 * LAMPORTS_PER_SOL;
+          const maxBalance = balance - gasBuffer;
+          maxAmount = (maxBalance / LAMPORTS_PER_SOL).toFixed(4);
+        } else if (sendTokenInfo.token.address) {
+          try {
+            const tokenMint = new PublicKey(sendTokenInfo.token.address);
+            const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+              mint: tokenMint
+            });
+            
+            if (tokenAccounts.value.length > 0) {
+              const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount;
+              maxAmount = tokenBalance.uiAmountString || '0';
+            } else {
+              maxAmount = '0';
+              toast({
+                title: "No token account found",
+                description: "You don't have a token account for this SPL token",
+                variant: "destructive"
+              });
+            }
+          } catch (error) {
+            console.error('Error fetching SPL token balance:', error);
+            toast({
+              title: "Error setting max amount",
+              description: "Failed to fetch SPL token balance",
+              variant: "destructive"
+            });
+            return;
+          }
+        }
+      }
+
+      setSendAmount(maxAmount);
+      toast({
+        title: "Maximum amount set",
+        description: `Set to maximum available balance: ${maxAmount} ${sendTokenInfo.token.symbol}`,
+      });
+    } catch (error: any) {
+      console.error('Error setting max amount:', error);
+      toast({
+        title: "Error setting max amount",
+        description: error.message || "Failed to set maximum amount",
+        variant: "destructive"
+      });
+    }
   };
   
   const toggleSendReceive = () => {
@@ -278,7 +471,7 @@ const Bridge: React.FC = () => {
     const isEthereumChain = sendTokenInfo.chain.name.toLowerCase().includes('ethereum');
     const isSolanaChain = sendTokenInfo.chain.name.toLowerCase().includes('solana');
 
-    if (isEthereumChain && (!window.ethereum || connectedWallet !== 'metamask')) {
+    if (isEthereumChain && (!window.ethereum || activeWallet !== 'metamask')) {
       toast({
         title: "Wrong Wallet",
         description: "Please connect MetaMask to send from Ethereum chain",
@@ -288,7 +481,7 @@ const Bridge: React.FC = () => {
       return;
     }
 
-    if (isSolanaChain && (!window.solana?.isPhantom || connectedWallet !== 'phantom')) {
+    if (isSolanaChain && (!window.solana?.isPhantom || activeWallet !== 'phantom')) {
       toast({
         title: "Wrong Wallet",
         description: "Please connect Phantom wallet to send from Solana chain",
@@ -355,9 +548,9 @@ const Bridge: React.FC = () => {
       // Check if sending from Solana chain
       else if (isSolanaChain) {
         // Validate if user has sufficient balance
-        const connection = new window.solana.Connection("https://api.mainnet-beta.solana.com");
-        const balance = await connection.getBalance(new window.solana.PublicKey(walletAddress));
-        const amountInLamports = parseFloat(sendAmount) * window.solana.LAMPORTS_PER_SOL;
+        const connection = new Connection("https://api.mainnet-beta.solana.com");
+        const balance = await connection.getBalance(new PublicKey(walletAddress));
+        const amountInLamports = parseFloat(sendAmount) * LAMPORTS_PER_SOL;
         
         if (balance < amountInLamports) {
           throw new Error("Insufficient balance for transaction");
@@ -426,12 +619,30 @@ const Bridge: React.FC = () => {
 
   const handleWalletSelect = async (walletId: string) => {
     if (walletId === 'metamask') {
-      const connection = await connectMetaMask();
+      // Determine target network based on selected token/chain
+      let targetNetwork: 'ETHEREUM' | 'BSC' | 'SCROLL' | undefined;
+      
+      if (sendTokenInfo) {
+        if (sendTokenInfo.chain.id === 'ethereum') {
+          targetNetwork = 'ETHEREUM';
+        } else if (sendTokenInfo.chain.id === 'bsc') {
+          targetNetwork = 'BSC';
+        } else if (sendTokenInfo.chain.id === 'scroll') {
+          targetNetwork = 'SCROLL';
+        }
+      }
+
+      const connection = await connectMetaMask(targetNetwork);
       
       if (connection) {
-        setConnectedWallet('metamask');
-        setWalletAddress(connection.address);
-        setChainId(connection.chainId);
+        setConnectedWallets(prev => ({
+          ...prev,
+          metamask: {
+            address: connection.address,
+            chainId: connection.chainId
+          }
+        }));
+        setActiveWallet('metamask');
         setIsConnected(true);
         
         toast({
@@ -443,9 +654,14 @@ const Bridge: React.FC = () => {
       const connection = await connectPhantom();
       
       if (connection) {
-        setConnectedWallet('phantom');
-        setWalletAddress(connection.address);
-        setChainId(connection.chainId);
+        setConnectedWallets(prev => ({
+          ...prev,
+          phantom: {
+            address: connection.address,
+            chainId: connection.chainId
+          }
+        }));
+        setActiveWallet('phantom');
         setIsConnected(true);
         
         toast({
@@ -453,23 +669,29 @@ const Bridge: React.FC = () => {
           description: "Successfully connected to Phantom",
         });
       }
-    } else {
-      toast({
-        title: "Not Implemented",
-        description: `${walletId} connection not yet implemented`,
-        variant: "destructive"
-      });
     }
+    
+    setShowWalletModal(false);
   };
 
-  const handleDisconnectWallet = () => {
-    setIsConnected(false);
-    setConnectedWallet(null);
-    setWalletAddress(null);
-    setChainId(null);
+  const handleDisconnectWallet = (wallet: 'metamask' | 'phantom') => {
+    setConnectedWallets(prev => {
+      const newState = { ...prev };
+      delete newState[wallet];
+      return newState;
+    });
+    
+    if (activeWallet === wallet) {
+      setActiveWallet(null);
+    }
+    
+    if (Object.keys(connectedWallets).length === 1) {
+      setIsConnected(false);
+    }
+    
     toast({
       title: "Wallet Disconnected",
-      description: "Your wallet has been disconnected.",
+      description: `Your ${wallet === 'metamask' ? 'MetaMask' : 'Phantom'} wallet has been disconnected.`,
     });
   };
 
@@ -478,9 +700,57 @@ const Bridge: React.FC = () => {
     setShowTokenSelectionModal(true);
   };
   
-  const handleTokenSelect = (selection: { token: Token; chain: Chain }) => {
+  const handleTokenSelect = async (selection: { token: Token; chain: Chain }) => {
     if (tokenSelectionMode === 'send') {
       setSendTokenInfo(selection);
+      
+      // Handle network switching for Ethereum-based chains
+      if (['ethereum', 'bsc', 'scroll'].includes(selection.chain.id)) {
+        // If not connected to MetaMask, connect first
+        if (!isConnected || activeWallet !== 'metamask') {
+          const targetNetwork = selection.chain.id === 'ethereum' ? 'ETHEREUM' :
+                              selection.chain.id === 'bsc' ? 'BSC' :
+                              selection.chain.id === 'scroll' ? 'SCROLL' : undefined;
+          
+          const connection = await connectMetaMask(targetNetwork);
+          if (connection) {
+            setConnectedWallets(prev => ({
+              ...prev,
+              metamask: {
+                address: connection.address,
+                chainId: connection.chainId
+              }
+            }));
+            setActiveWallet('metamask');
+            setIsConnected(true);
+          }
+        } else {
+          // If already connected to MetaMask, just switch network
+          const targetNetwork = selection.chain.id === 'ethereum' ? 'ETHEREUM' :
+                              selection.chain.id === 'bsc' ? 'BSC' :
+                              selection.chain.id === 'scroll' ? 'SCROLL' : undefined;
+          
+          if (targetNetwork) {
+            const networkConfig = NETWORKS[targetNetwork];
+            await switchNetwork(networkConfig);
+          }
+        }
+      }
+      // Handle Solana chain selection
+      else if (selection.chain.id === 'solana' && (!isConnected || activeWallet !== 'phantom')) {
+        const connection = await connectPhantom();
+        if (connection) {
+          setConnectedWallets(prev => ({
+            ...prev,
+            phantom: {
+              address: connection.address,
+              chainId: connection.chainId
+            }
+          }));
+          setActiveWallet('phantom');
+          setIsConnected(true);
+        }
+      }
     } else {
       setReceiveTokenInfo(selection);
     }
@@ -602,6 +872,15 @@ const Bridge: React.FC = () => {
     setIsEditingSlippage(false);
   };
   
+  // Helper function to get current wallet info based on chain
+  const getWalletForChain = (chainType: 'ethereum' | 'solana') => {
+    if (chainType === 'ethereum') {
+      return connectedWallets.metamask;
+    } else {
+      return connectedWallets.phantom;
+    }
+  };
+  
   return (
     <div className="min-h-screen bg-[#121217] text-white flex flex-col">
       {/* Header */}
@@ -615,22 +894,42 @@ const Bridge: React.FC = () => {
             >
               BRIDGE
             </button>
-            {/* <button 
+            <button 
               className={`px-1 py-0.5 text-sm font-medium ${selectedTab === 'explorer' ? 'text-white' : 'text-bridge-muted hover:text-white/80'}`}
               onClick={() => setSelectedTab('explorer')}
             >
               EXPLORER
-            </button> */}
+            </button>
           </nav>
         </div>
         
         <div className="flex items-center space-x-3">
-          {isConnected ? (
-            <WalletDropdown
-              address={walletAddress || ''}
-              onDisconnect={handleDisconnectWallet}
-              onShowAccount={() => setShowAccountModal(true)}
-            />
+          {Object.keys(connectedWallets).length > 0 ? (
+            <div className="flex items-center space-x-2">
+              {connectedWallets.metamask && (
+                <WalletDropdown
+                  address={connectedWallets.metamask.address}
+                  onDisconnect={() => handleDisconnectWallet('metamask')}
+                  onShowAccount={() => setShowAccountModal(true)}
+                  walletType="metamask"
+                  isActive={activeWallet === 'metamask'}
+                  onSetActive={() => setActiveWallet('metamask')}
+                />
+              )}
+              {connectedWallets.phantom && (
+                <WalletDropdown
+                  address={connectedWallets.phantom.address}
+                  onDisconnect={() => handleDisconnectWallet('phantom')}
+                  onShowAccount={() => setShowAccountModal(true)}
+                  walletType="phantom"
+                  isActive={activeWallet === 'phantom'}
+                  onSetActive={() => setActiveWallet('phantom')}
+                />
+              )}
+              <Button size="sm" onClick={handleConnectWallet}>
+                Add Wallet
+              </Button>
+            </div>
           ) : (
             <Button size="sm" onClick={handleConnectWallet}>
               Connect
@@ -679,18 +978,20 @@ const Bridge: React.FC = () => {
                   <span className="text-bridge-muted">Send</span>
                   <button 
                     onClick={() => openTokenSelection('send')}
-                    className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
+                    className="flex items-center space-x-1 bg-bridge-accent/30 px-3 py-2 rounded hover:bg-bridge-accent/50 transition-colors min-w-[140px] justify-center"
                   >
                     {sendTokenInfo ? (
                       <>
-                        <img 
-                          src={sendTokenInfo.token.icon} 
-                          alt={sendTokenInfo.token.symbol}
-                          className="w-6 h-6 mr-1 object-contain"
-                        />
-                        <div className="flex flex-col items-start">
-                          <span className="text-xs">{sendTokenInfo.token.symbol}</span>
-                          <span className="text-xs text-bridge-muted">{sendTokenInfo.chain.name}</span>
+                        <div className="flex items-center justify-center">
+                          <img 
+                            src={sendTokenInfo.token.icon} 
+                            alt={sendTokenInfo.token.symbol}
+                            className="w-6 h-6 mr-2 object-contain"
+                          />
+                          <div className="flex flex-col items-center">
+                            <span className="text-xs">{sendTokenInfo.token.symbol}</span>
+                            <span className="text-xs text-bridge-muted">{sendTokenInfo.chain.name}</span>
+                          </div>
                         </div>
                       </>
                     ) : (
@@ -744,18 +1045,20 @@ const Bridge: React.FC = () => {
                   <span className="text-bridge-muted">Receive</span>
                   <button 
                     onClick={() => openTokenSelection('receive')}
-                    className="flex items-center space-x-1 bg-bridge-accent/30 px-2 py-1 rounded hover:bg-bridge-accent/50 transition-colors"
+                    className="flex items-center space-x-1 bg-bridge-accent/30 px-3 py-2 rounded hover:bg-bridge-accent/50 transition-colors min-w-[140px] justify-center"
                   >
                     {receiveTokenInfo ? (
                       <>
-                        <img 
-                          src={receiveTokenInfo.token.icon} 
-                          alt={receiveTokenInfo.token.symbol}
-                          className="w-6 h-6 mr-1 object-contain"
-                        />
-                        <div className="flex flex-col items-start">
-                          <span className="text-xs">{receiveTokenInfo.token.symbol}</span>
-                          <span className="text-xs text-bridge-muted">{receiveTokenInfo.chain.name}</span>
+                        <div className="flex items-center justify-center">
+                          <img 
+                            src={receiveTokenInfo.token.icon} 
+                            alt={receiveTokenInfo.token.symbol}
+                            className="w-6 h-6 mr-2 object-contain"
+                          />
+                          <div className="flex flex-col items-center">
+                            <span className="text-xs">{receiveTokenInfo.token.symbol}</span>
+                            <span className="text-xs text-bridge-muted">{receiveTokenInfo.chain.name}</span>
+                          </div>
                         </div>
                       </>
                     ) : (
@@ -904,11 +1207,16 @@ const Bridge: React.FC = () => {
         transaction={currentTransaction}
       />
       
-      <AccountModal
-        isOpen={showAccountModal}
-        onClose={() => setShowAccountModal(false)}
-        transactions={accountTransactions}
-      />
+      {showAccountModal && (
+        <AccountModal
+          isOpen={showAccountModal}
+          onClose={() => setShowAccountModal(false)}
+          transactions={accountTransactions}
+          ethereumAddress={connectedWallets.metamask?.address || null}
+          solanaAddress={connectedWallets.phantom?.address || null}
+          ethereumChainId={connectedWallets.metamask?.chainId || null}
+        />
+      )}
 
       <TokenSelectionModal
         isOpen={showTokenSelectionModal}

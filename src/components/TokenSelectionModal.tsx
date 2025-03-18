@@ -13,27 +13,45 @@ export interface Chain {
   id: string;
   name: string;
   icon?: string;
+  address?: string; // Chain-specific token address
 }
 
 // Available tokens and their supported chains
 const tokens: Token[] = [
-  {
-    symbol: 'ETH',
-    name: 'Ethereum',
-    icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
-    chains: [
-      { 
-        id: 'ethereum', 
-        name: 'Ethereum', 
-        icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png'
-      },
-    ],
-  },
+  // {
+  //   symbol: 'ETH',
+  //   name: 'Ethereum',
+  //   icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+  //   chains: [
+  //     { 
+  //       id: 'ethereum', 
+  //       name: 'Ethereum', 
+  //       icon: 'https://cryptologos.cc/logos/ethereum-eth-logo.png'
+  //     },
+  //     {
+  //       id: 'scroll',
+  //       name: 'Scroll',
+  //       icon: '/assets/tokens/scroll.png'
+  //     }
+  //   ],
+  // },
+  // {
+  //   symbol: 'BNB',
+  //   name: 'Binance Coin',
+  //   icon: 'https://cryptologos.cc/logos/bnb-bnb-logo.png',
+  //   chains: [
+  //     {
+  //       id: 'bsc',
+  //       name: 'BNB Chain',
+  //       icon: 'https://cryptologos.cc/logos/bnb-bnb-logo.png'
+  //     }
+  //   ],
+  // },
   {
     symbol: 'USDT',
     name: 'Tether USD',
     icon: 'https://cryptologos.cc/logos/tether-usdt-logo.png',
-    address: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', // Ethereum USDT
     chains: [
       { 
         id: 'ethereum', 
@@ -45,20 +63,32 @@ const tokens: Token[] = [
         name: 'Solana', 
         icon: 'https://cryptologos.cc/logos/solana-sol-logo.png'
       },
+      {
+        id: 'bsc',
+        name: 'BNB Chain',
+        icon: 'https://cryptologos.cc/logos/bnb-bnb-logo.png',
+        address: '0x55d398326f99059fF775485246999027B3197955' // BSC USDT
+      },
+      {
+        id: 'scroll',
+        name: 'Scroll',
+        icon: '/assets/tokens/scroll.png',
+        address: '0xf55BEC9cafE438A8799c8940E623d9B6EAb6337c' // Scroll USDT
+      }
     ],
   },
-  {
-    symbol: 'SOL',
-    name: 'Solana',
-    icon: 'https://cryptologos.cc/logos/solana-sol-logo.png',
-    chains: [
-      { 
-        id: 'solana', 
-        name: 'Solana', 
-        icon: 'https://cryptologos.cc/logos/solana-sol-logo.png'
-      },
-    ],
-  }
+  // {
+  //   symbol: 'SOL',
+  //   name: 'Solana',
+  //   icon: 'https://cryptologos.cc/logos/solana-sol-logo.png',
+  //   chains: [
+  //     { 
+  //       id: 'solana', 
+  //       name: 'Solana', 
+  //       icon: 'https://cryptologos.cc/logos/solana-sol-logo.png'
+  //     },
+  //   ],
+  // }
 ];
 
 interface TokenSelectionModalProps {
